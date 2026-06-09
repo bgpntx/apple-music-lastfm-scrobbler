@@ -1,10 +1,12 @@
 import Foundation
 
-public protocol AppleMusicReading {
+public protocol AppleMusicReading: Sendable {
     func currentTrack() throws -> TrackSnapshot
 }
 
 public struct AppleMusicReader: AppleMusicReading {
+    private static let timeout: TimeInterval = 5
+
     public init() {}
 
     private let script = """
@@ -60,7 +62,12 @@ public struct AppleMusicReader: AppleMusicReading {
             throw ScrobblerError.appleMusicUnavailable(error.localizedDescription)
         }
 
-        process.waitUntilExit()
+        let didExit = waitForProcess(process, timeout: Self.timeout)
+        if !didExit {
+            process.terminate()
+            _ = waitForProcess(process, timeout: 1)
+            throw ScrobblerError.appleMusicUnavailable("osascript timed out")
+        }
 
         let stdout = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: errorOutput.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -78,5 +85,16 @@ public struct AppleMusicReader: AppleMusicReading {
         } catch {
             throw ScrobblerError.appleMusicParseFailed(stdout)
         }
+    }
+
+    private func waitForProcess(_ process: Process, timeout: TimeInterval) -> Bool {
+        let semaphore = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .utility).async {
+            process.waitUntilExit()
+            semaphore.signal()
+        }
+
+        return semaphore.wait(timeout: .now() + timeout) == .success
     }
 }

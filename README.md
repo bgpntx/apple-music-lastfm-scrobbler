@@ -10,7 +10,7 @@ This is intentionally small: it polls Music.app, sends `track.updateNowPlaying`,
 - Apple Music only, read through macOS Automation/JXA.
 - Last.fm desktop auth flow.
 - `track.updateNowPlaying` and `track.scrobble` support.
-- Last.fm scrobble rule: longer than 30 seconds, then half the track or 4 minutes, whichever comes first.
+- Last.fm scrobble rule: longer than 30 seconds, then half the observed playback or 4 minutes, whichever comes first.
 - Retry queue for failed scrobbles.
 - Per-user `launchd` agent install/uninstall commands.
 

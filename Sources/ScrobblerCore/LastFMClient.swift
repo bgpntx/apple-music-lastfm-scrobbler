@@ -1,7 +1,27 @@
 import CryptoKit
 import Foundation
 
-public struct LastFMClient {
+public struct ScrobbleBatchReport: Equatable, Sendable {
+    public var accepted: Int
+    public var ignoredMessages: [String]
+
+    public var ignored: Int {
+        ignoredMessages.count
+    }
+
+    public init(accepted: Int, ignoredMessages: [String]) {
+        self.accepted = accepted
+        self.ignoredMessages = ignoredMessages
+    }
+}
+
+public protocol LastFMServicing: Sendable {
+    func updateNowPlaying(_ track: TrackSnapshot) async throws
+    func scrobble(_ scrobble: PendingScrobble) async throws -> ScrobbleBatchReport
+    func scrobble(_ scrobbles: [PendingScrobble]) async throws -> ScrobbleBatchReport
+}
+
+public struct LastFMClient: LastFMServicing {
     private let apiRoot = URL(string: "https://ws.audioscrobbler.com/2.0/")!
     private let urlSession: URLSession
     private let config: AppConfig
@@ -42,45 +62,74 @@ public struct LastFMClient {
 
     public func updateNowPlaying(_ track: TrackSnapshot) async throws {
         let params = commonTrackParameters(method: "track.updateNowPlaying", track: track)
-        try await authenticatedRequest(params)
+        _ = try await authenticatedRequest(params)
     }
 
-    public func scrobble(_ scrobble: PendingScrobble) async throws {
+    public func scrobble(_ scrobble: PendingScrobble) async throws -> ScrobbleBatchReport {
         var params = commonTrackParameters(method: "track.scrobble", track: scrobble.track)
         params["timestamp"] = String(scrobble.timestamp)
-        try await authenticatedRequest(params)
+        let response = try await authenticatedRequest(params)
+        return try Self.scrobbleReport(from: response)
+    }
+
+    public func scrobble(_ scrobbles: [PendingScrobble]) async throws -> ScrobbleBatchReport {
+        guard !scrobbles.isEmpty else {
+            return ScrobbleBatchReport(accepted: 0, ignoredMessages: [])
+        }
+
+        guard scrobbles.count > 1 else {
+            return try await scrobble(scrobbles[0])
+        }
+
+        var params: [String: String] = [
+            "method": "track.scrobble",
+            "api_key": config.apiKey
+        ]
+
+        for (index, scrobble) in scrobbles.enumerated() {
+            appendTrackParameters(track: scrobble.track, to: &params, suffix: "[\(index)]")
+            params["timestamp[\(index)]"] = String(scrobble.timestamp)
+        }
+
+        let response = try await authenticatedRequest(params)
+        return try Self.scrobbleReport(from: response)
     }
 
     private func commonTrackParameters(method: String, track: TrackSnapshot) -> [String: String] {
         var params: [String: String] = [
             "method": method,
-            "api_key": config.apiKey,
-            "artist": track.artist,
-            "track": track.name,
-            "duration": String(Int(track.duration.rounded()))
+            "api_key": config.apiKey
         ]
 
-        if let album = track.album, !album.isEmpty {
-            params["album"] = album
-        }
-        if let albumArtist = track.albumArtist, !albumArtist.isEmpty, albumArtist != track.artist {
-            params["albumArtist"] = albumArtist
-        }
-        if let trackNumber = track.trackNumber, trackNumber > 0 {
-            params["trackNumber"] = String(trackNumber)
-        }
+        appendTrackParameters(track: track, to: &params, suffix: "")
 
         return params
     }
 
-    private func authenticatedRequest(_ params: [String: String]) async throws {
+    private func appendTrackParameters(track: TrackSnapshot, to params: inout [String: String], suffix: String) {
+        params["artist\(suffix)"] = track.artist
+        params["track\(suffix)"] = track.name
+        params["duration\(suffix)"] = String(Int(track.duration.rounded()))
+
+        if let album = track.album, !album.isEmpty {
+            params["album\(suffix)"] = album
+        }
+        if let albumArtist = track.albumArtist, !albumArtist.isEmpty, albumArtist != track.artist {
+            params["albumArtist\(suffix)"] = albumArtist
+        }
+        if let trackNumber = track.trackNumber, trackNumber > 0 {
+            params["trackNumber\(suffix)"] = String(trackNumber)
+        }
+    }
+
+    private func authenticatedRequest(_ params: [String: String]) async throws -> [String: Any] {
         guard let sessionKey = config.sessionKey, !sessionKey.isEmpty else {
             throw ScrobblerError.sessionMissing
         }
 
         var signedParams = params
         signedParams["sk"] = sessionKey
-        _ = try await request(signedParams)
+        return try await request(signedParams)
     }
 
     private func request(_ params: [String: String]) async throws -> [String: Any] {
@@ -112,6 +161,57 @@ public struct LastFMClient {
         }
 
         return parsed
+    }
+
+    static func scrobbleReport(from response: [String: Any]) throws -> ScrobbleBatchReport {
+        guard let scrobbles = response["scrobbles"] as? [String: Any] else {
+            throw ScrobblerError.lastFMFailed("track.scrobble did not return scrobbles")
+        }
+
+        let entries: [[String: Any]]
+        if let entry = scrobbles["scrobble"] as? [String: Any] {
+            entries = [entry]
+        } else if let batch = scrobbles["scrobble"] as? [[String: Any]] {
+            entries = batch
+        } else {
+            entries = []
+        }
+
+        var ignoredMessages: [String] = []
+
+        for entry in entries {
+            guard let ignored = entry["ignoredMessage"] as? [String: Any] else {
+                continue
+            }
+
+            let code = ignored["code"].map { "\($0)" } ?? "0"
+            let text = (ignored["#text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            if code != "0" || !text.isEmpty {
+                ignoredMessages.append(text.isEmpty ? "code \(code)" : text)
+            }
+        }
+
+        let attr = scrobbles["@attr"] as? [String: Any]
+        let accepted = intValue(attr?["accepted"]) ?? max(0, entries.count - ignoredMessages.count)
+        let ignoredCount = intValue(attr?["ignored"]) ?? ignoredMessages.count
+
+        if ignoredCount > ignoredMessages.count {
+            ignoredMessages.append("Last.fm ignored \(ignoredCount - ignoredMessages.count) additional scrobble(s)")
+        }
+
+        return ScrobbleBatchReport(accepted: accepted, ignoredMessages: ignoredMessages)
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        switch value {
+        case let int as Int:
+            return int
+        case let string as String:
+            return Int(string)
+        default:
+            return nil
+        }
     }
 
     private func formBody(_ params: [String: String]) -> Data {

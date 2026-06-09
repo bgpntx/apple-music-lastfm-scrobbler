@@ -22,6 +22,10 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.username = username
         self.pollInterval = pollInterval
     }
+
+    public var hasSessionKey: Bool {
+        sessionKey?.isEmpty == false
+    }
 }
 
 public struct AppState: Codable, Equatable, Sendable {

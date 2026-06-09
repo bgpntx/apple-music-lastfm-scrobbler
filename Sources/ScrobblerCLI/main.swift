@@ -67,7 +67,7 @@ enum Main {
 
     private static func installAgent(store: FileStore) throws {
         let config = try store.loadConfig()
-        guard config.sessionKey?.isEmpty == false else {
+        guard config.hasSessionKey else {
             throw ScrobblerError.sessionMissing
         }
 
