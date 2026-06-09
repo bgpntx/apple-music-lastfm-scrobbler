@@ -1,0 +1,7 @@
+{
+  "apiKey": "LASTFM_API_KEY",
+  "pollInterval": 5,
+  "sessionKey": null,
+  "sharedSecret": "LASTFM_SHARED_SECRET",
+  "username": null
+}

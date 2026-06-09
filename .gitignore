@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+.DS_Store
+*.xcodeproj
+config.json
+state.json
+*.log
+*.err.log
+com.local.apple-music-lastfm-scrobbler.plist
