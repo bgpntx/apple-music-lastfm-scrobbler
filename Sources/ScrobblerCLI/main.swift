@@ -4,6 +4,9 @@ import ScrobblerCore
 @main
 enum Main {
     static func main() async {
+        // stdout is fully buffered when redirected to a file (launchd logs); keep it line-buffered.
+        setvbuf(stdout, nil, _IOLBF, 0)
+
         do {
             try await run()
         } catch {

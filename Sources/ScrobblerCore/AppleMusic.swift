@@ -56,16 +56,24 @@ public struct AppleMusicReader: AppleMusicReading {
         process.standardOutput = output
         process.standardError = errorOutput
 
+        defer {
+            try? output.fileHandleForReading.close()
+            try? errorOutput.fileHandleForReading.close()
+        }
+
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+
         do {
             try process.run()
         } catch {
             throw ScrobblerError.appleMusicUnavailable(error.localizedDescription)
         }
 
-        let didExit = waitForProcess(process, timeout: Self.timeout)
-        if !didExit {
-            process.terminate()
-            _ = waitForProcess(process, timeout: 1)
+        if exited.wait(timeout: .now() + Self.timeout) != .success {
+            // osascript stuck in an Apple Event ignores SIGTERM; only SIGKILL reliably stops it.
+            kill(process.processIdentifier, SIGKILL)
+            _ = exited.wait(timeout: .now() + 1)
             throw ScrobblerError.appleMusicUnavailable("osascript timed out")
         }
 
@@ -85,16 +93,5 @@ public struct AppleMusicReader: AppleMusicReading {
         } catch {
             throw ScrobblerError.appleMusicParseFailed(stdout)
         }
-    }
-
-    private func waitForProcess(_ process: Process, timeout: TimeInterval) -> Bool {
-        let semaphore = DispatchSemaphore(value: 0)
-
-        DispatchQueue.global(qos: .utility).async {
-            process.waitUntilExit()
-            semaphore.signal()
-        }
-
-        return semaphore.wait(timeout: .now() + timeout) == .success
     }
 }
